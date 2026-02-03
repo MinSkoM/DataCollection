@@ -18,10 +18,13 @@ const App: React.FC = () => {
     const [hasPermission, setHasPermission] = useState(false);
     const [isRecording, setIsRecording] = useState(false);
     
-    // Ref for recording state to avoid stale closures in callbacks
+    const [isReviewing, setIsReviewing] = useState(false);
+    // Ref for recording state to avoid stale closures
     const isRecordingRef = useRef(false);
 
+    // แก้ไขค่าเริ่มต้นให้ตรงกับ Dropdown
     const [scenario, setScenario] = useState<Scenario>('REAL_Normal');
+    
     const [uploadStatus, setUploadStatus] = useState<UploadStatus>('idle');
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -177,7 +180,7 @@ const App: React.FC = () => {
         };
     };
 
-    // --- 5. Main Loop (FaceMesh + OpenCV) ---
+    // --- 5. Main Loop (FaceMesh + OpenCV + DRAWING) ---
     const onFaceMeshResults = useCallback((results: any) => {
         const canvasCtx = canvasRef.current?.getContext('2d', { willReadFrequently: true });
         if (!canvasCtx || !videoRef.current || !canvasRef.current) return;
@@ -188,29 +191,46 @@ const App: React.FC = () => {
             canvasRef.current.height = videoHeight;
         }
         
-        canvasCtx.save();
+        // --- 1. CLEAR CANVAS (ล้างหน้าจอทุกเฟรม เพื่อวาดใหม่) ---
         canvasCtx.clearRect(0, 0, videoWidth, videoHeight);
         
         let faceLandmarks: FaceMeshResult | null = null;
         let faceBoundingBox = null;
 
-        // Draw FaceMesh
+        // --- 2. DRAWING LOGIC (วาดตลอดเวลา ไม่สนว่าอัดอยู่ไหม) ---
         if (results.multiFaceLandmarks && results.multiFaceLandmarks[0]) {
             const landmarks = results.multiFaceLandmarks[0];
+            
+            // เตรียมข้อมูล
             faceLandmarks = {
                 all: landmarks,
                 specific: FACEMESH_LANDMARK_INDICES.map(i => landmarks[i]),
                 flat: FACEMESH_LANDMARK_INDICES.flatMap(i => [landmarks[i].x, landmarks[i].y, landmarks[i].z])
             };
 
-            canvasCtx.strokeStyle = 'rgba(75, 192, 192, 0.8)';
-            canvasCtx.lineWidth = 2;
-            faceLandmarks.specific.forEach(lm => {
+            // A. วาดโครงสร้างหน้า (468 จุด) - สีฟ้าจางๆ
+            canvasCtx.fillStyle = 'rgba(0, 255, 255, 0.4)'; // Cyan, โปร่งแสง
+            landmarks.forEach((lm: Point) => {
+                const x = lm.x * videoWidth;
+                const y = lm.y * videoHeight;
                 canvasCtx.beginPath();
-                canvasCtx.arc(lm.x * videoWidth, lm.y * videoHeight, 2, 0, 2 * Math.PI);
+                canvasCtx.arc(x, y, 1, 0, 2 * Math.PI); // จุดเล็ก
+                canvasCtx.fill();
+            });
+
+            // B. วาดจุดสำคัญ (28 จุด) - สีเขียวสว่าง
+            canvasCtx.fillStyle = '#00FF00'; // Green
+
+            faceLandmarks.specific.forEach((lm: Point) => {
+                const x = lm.x * videoWidth;
+                const y = lm.y * videoHeight;
+                canvasCtx.beginPath();
+                canvasCtx.arc(x, y, 2, 0, 2 * Math.PI); // จุดใหญ่
+                canvasCtx.fill();
                 canvasCtx.stroke();
             });
 
+            // คำนวณ Bounding Box สำหรับ OpenCV
             const xs = landmarks.map((l: Point) => l.x);
             const ys = landmarks.map((l: Point) => l.y);
             faceBoundingBox = {
@@ -219,10 +239,8 @@ const App: React.FC = () => {
             };
         }
 
-        // --- OpenCV Processing & bg_variance Calculation ---
+        // --- 3. OpenCV Processing & bg_variance Calculation ---
         const cv = (window as any).cv;
-        
-        // ประกาศตัวแปรเก็บ Variance ไว้ตรงนี้ เพื่อให้ scope ใช้งานได้จนจบฟังก์ชัน
         let currentBgVariance = 0; 
 
         if (cv && cv.Mat && videoWidth > 0) {
@@ -235,11 +253,31 @@ const App: React.FC = () => {
             let err: any = null;
 
             try {
+                // สร้าง Mat จาก Video (แต่ไม่วาดทับลง Canvas ที่เราวาดจุดไปแล้ว)
                 currentFrame = new cv.Mat(videoHeight, videoWidth, cv.CV_8UC4);
-                canvasCtx.drawImage(videoRef.current, 0, 0, videoWidth, videoHeight);
-                const frameImageData = canvasCtx.getImageData(0, 0, videoWidth, videoHeight);
-                currentFrame.data.set(frameImageData.data);
                 
+                // *Hack*: เราต้องดึงภาพจาก Video element มาวิเคราะห์ แต่ระวังอย่าไป drawImage ทับจุดที่เราวาด
+                // วิธีคือ: สร้าง canvas ชั่วคราว หรือใช้ OffscreenCanvas แต่ง่ายสุดคือ
+                // ยอมให้วิเคราะห์จาก Canvas เดิมก่อนวาดจุด (แต่เราวาดไปแล้ว)
+                // ดังนั้น: ใช้เทคนิค drawImage จาก video ลงบน Mat โดยตรงผ่าน temporary canvas หรือ
+                // เพื่อความง่าย: ให้ยอมรับว่า OpenCV จะ process ภาพที่อาจจะไม่มีจุด (เพราะเราดึงจาก videoRef)
+                
+                // ใช้ canvasCtx ชั่วคราวในการดึง pixel data (อันนี้อาจจะกิน resource นิดหน่อย)
+                // แต่เพื่อความชัวร์ เราจะดึงจาก videoRef โดยตรงไม่ได้ ต้องผ่าน canvas
+                // เพื่อประสิทธิภาพ เราจะข้ามขั้นตอนการวาด video ลง canvas หลัก 
+                // แต่จะใช้ offscreen logic ถ้าทำได้. แต่ในที่นี้ขอใช้วิธีดึงภาพจาก video ลง currentFrame ตรงๆ
+                
+                // สร้าง Canvas ชั่วคราวใน Memory เพื่อดึงภาพจาก Video (ไม่ให้กวนหน้าจอหลัก)
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = videoWidth;
+                tempCanvas.height = videoHeight;
+                const tempCtx = tempCanvas.getContext('2d');
+                if(tempCtx) {
+                    tempCtx.drawImage(videoRef.current, 0, 0, videoWidth, videoHeight);
+                    const frameImageData = tempCtx.getImageData(0, 0, videoWidth, videoHeight);
+                    currentFrame.data.set(frameImageData.data);
+                }
+
                 currentGray = new cv.Mat();
                 cv.cvtColor(currentFrame, currentGray, cv.COLOR_RGBA2GRAY);
 
@@ -248,7 +286,6 @@ const App: React.FC = () => {
                     if (!backgroundPoints.current || backgroundPoints.current.rows === 0) {
                         mask = new cv.Mat.zeros(videoHeight, videoWidth, cv.CV_8U);
                         if (faceBoundingBox) {
-                            // Mask out the face
                             const x = faceBoundingBox.xMin * videoWidth - 20;
                             const y = faceBoundingBox.yMin * videoHeight - 20;
                             const w = (faceBoundingBox.xMax - faceBoundingBox.xMin) * videoWidth + 40;
@@ -268,7 +305,7 @@ const App: React.FC = () => {
                         backgroundPoints.current = tempPoints; 
                     }
 
-                    // 2. Optical Flow Calculation
+                    // 2. Optical Flow
                     if (backgroundPoints.current && backgroundPoints.current.rows > 0) {
                         nextPoints = new cv.Mat();
                         status = new cv.Mat();
@@ -276,39 +313,30 @@ const App: React.FC = () => {
                         
                         cv.calcOpticalFlowPyrLK(prevGray.current, currentGray, backgroundPoints.current, nextPoints, status, err);
                         
-                        const p0 = backgroundPoints.current.data32F; // Points in prev frame
-                        const p1 = nextPoints.data32F;               // Points in current frame
+                        const p0 = backgroundPoints.current.data32F;
+                        const p1 = nextPoints.data32F;
                         const st = status.data;
 
                         let goodNewPoints = [];
-                        let movements: number[] = []; // Array to store movement distances
+                        let movements: number[] = [];
 
                         for (let i = 0; i < st.length; i++) {
                             if (st[i] === 1) {
-                                // Keep good points
                                 goodNewPoints.push(p1[i * 2], p1[i * 2 + 1]);
-
-                                // --- [FIX] Calculate Distance & Variance ---
                                 const xOld = p0[i * 2];
                                 const yOld = p0[i * 2 + 1];
                                 const xNew = p1[i * 2];
                                 const yNew = p1[i * 2 + 1];
-                                
-                                // Euclidean distance
                                 const dist = Math.sqrt(Math.pow(xNew - xOld, 2) + Math.pow(yNew - yOld, 2));
                                 movements.push(dist);
-                                // -----------------------------------------
                             }
                         }
 
-                        // --- [FIX] Calculate Variance from movements ---
                         if (movements.length > 0) {
                             const mean = movements.reduce((a, b) => a + b, 0) / movements.length;
                             const sqDiffs = movements.map(val => Math.pow(val - mean, 2));
-                            const variance = sqDiffs.reduce((a, b) => a + b, 0) / movements.length;
-                            currentBgVariance = variance; // Store in the variable we declared earlier
+                            currentBgVariance = sqDiffs.reduce((a, b) => a + b, 0) / movements.length;
                         }
-                        // ---------------------------------------------
 
                         if (backgroundPoints.current) backgroundPoints.current.delete();
                         backgroundPoints.current = goodNewPoints.length > 0 
@@ -322,7 +350,7 @@ const App: React.FC = () => {
                 currentGray = null;
 
             } catch (e) {
-                console.warn("OpenCV Processing Error:", e);
+                console.warn("OpenCV Error:", e);
                 if (backgroundPoints.current) { backgroundPoints.current.delete(); backgroundPoints.current = null; }
                 if (prevGray.current) { prevGray.current.delete(); prevGray.current = null; }
             } finally {
@@ -335,26 +363,57 @@ const App: React.FC = () => {
             }
         }
 
-        // --- 6. Recording Logic ---
+        // --- 4. Recording Logic ---
         if (isRecordingRef.current) { 
             const timestamp = Date.now();
             const { accel, gyro } = interpolateSensorData(timestamp);
             const opticalFlowPoints = backgroundPoints.current ? Array.from(backgroundPoints.current.data32F as number[]) : [];
+            
+            // --- [แก้ใหม่ล่าสุด] บังคับจับภาพ (Simple Capture) ---
+            let imageBase64 = null;
+            
+            // ไม่ต้องเช็ค readyState เยอะ เอาแค่มี video และขนาดไม่เป็น 0 ก็พอ
+            if (videoRef.current && videoRef.current.videoWidth > 0) {
+                try {
+                    const videoEl = videoRef.current;
+                    const tempCanvas = document.createElement('canvas');
+                    
+                    // ลดขนาดภาพลง (480px) เพื่อให้ส่งทันและไฟล์ไม่ใหญ่เกินไป
+                    const scale = 480 / videoEl.videoWidth;
+                    tempCanvas.width = 480;
+                    tempCanvas.height = videoEl.videoHeight * scale;
+                    
+                    const tempCtx = tempCanvas.getContext('2d');
+                    if (tempCtx) {
+                        tempCtx.drawImage(videoEl, 0, 0, tempCanvas.width, tempCanvas.height);
+                        // แปลงเป็น Base64 (.jpg)
+                        imageBase64 = tempCanvas.toDataURL('image/jpeg', 0.7);
+                    }
+                } catch (err) {
+                    console.error("❌ Capture Error:", err);
+                }
+            } else {
+                console.warn("⚠️ Video not ready for capture");
+            }
+            // ----------------------------------------------------
 
             recordedData.current.push({
                 timestamp,
                 faceMesh: faceLandmarks ? faceLandmarks.flat : null,
                 sensors: { accel, gyro },
                 opticalFlow: opticalFlowPoints,
-                bg_variance: currentBgVariance // --- [FIX] Added bg_variance to JSON ---
+                bg_variance: currentBgVariance,
+                image: imageBase64 // <--- ส่งรูป
             });
             
+            // --- Log เช็คหน้างานทันที ---
             if (recordedData.current.length % 30 === 0) {
-                console.log(`Recording... Frames: ${recordedData.current.length}, Variance: ${currentBgVariance.toFixed(4)}`);
+                // ถ้า imageBase64 มีค่า มันจะแสดงคำว่า "📸 Got Image"
+                // ถ้าไม่มี จะแสดง "❌ No Image"
+                const hasImg = imageBase64 ? "📸 Got Image" : "❌ No Image";
+                console.log(`Rec: ${recordedData.current.length} frames | ${hasImg}`);
             }
         }
-
-        canvasCtx.restore();
     }, []); 
 
     const gameLoop = useCallback(async () => {
@@ -379,34 +438,45 @@ const App: React.FC = () => {
 
     const toggleRecording = () => {
         if (isRecording) {
-            // STOP
+            // STOP RECORDING
             setIsRecording(false);
             isRecordingRef.current = false;
-            
-            console.log("Stopping... Data count:", recordedData.current.length);
+            console.log("Stopped. Total Frames:", recordedData.current.length);
             
             if (recordedData.current.length > 0) {
-                uploadData({ scenario, data: recordedData.current });
+                // แทนที่จะ upload เลย -> เปลี่ยนเป็นเข้าโหมด Review
+                setIsReviewing(true);
             } else {
-                console.warn("No data collected!");
-                setErrorMessage("No data was collected. Try again.");
+                setErrorMessage("No data collected.");
                 setTimeout(() => setErrorMessage(null), 3000);
             }
         } else {
-            // START
+            // START RECORDING
             recordedData.current = [];
             setIsRecording(true);
             isRecordingRef.current = true;
             setUploadStatus('idle');
-            console.log("Started Recording");
+            console.log("Started Recording...");
         }
+    };
+
+    const handleConfirmUpload = () => {
+        setIsReviewing(false); // ปิดหน้าต่าง Review
+        uploadData({ scenario, data: recordedData.current }); // ส่งข้อมูล
+    };
+
+    const handleDiscard = () => {
+        setIsReviewing(false); // ปิดหน้าต่าง Review
+        recordedData.current = []; // ลบข้อมูลทิ้ง
+        console.log("Data discarded.");
     };
 
     const uploadData = async (payload: any) => {
         setUploadStatus('uploading');
         try {
-            // Use localhost:5000 as configured
-            const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+            // อย่าลืมเปลี่ยน URL ตรงนี้ถ้าใช้ Ngrok
+            const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000'; 
+            
             const res = await fetch(`${apiUrl}/upload`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -414,7 +484,7 @@ const App: React.FC = () => {
             });
             if (!res.ok) throw new Error("Upload failed");
             setUploadStatus('success');
-            console.log("Upload Success!");
+            console.log("Success!");
             setTimeout(() => setUploadStatus('idle'), 3000);
         } catch (err: any) {
             setUploadStatus('error');
@@ -427,50 +497,83 @@ const App: React.FC = () => {
         return (
             <div className="w-screen h-screen flex flex-col items-center justify-center bg-gray-900 text-white">
                 <LoadingSpinner />
-                <p className="mt-4 text-lg">Initializing OpenCV & MediaPipe...</p>
+                <p className="mt-4 text-lg">Initializing...</p>
             </div>
         );
     }
 
     return (
         <div className="relative w-screen h-screen overflow-hidden bg-black">
-            <video ref={videoRef} autoPlay playsInline className="absolute inset-0 w-full h-full object-contain transform -scale-x-100" />
+            <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-contain transform -scale-x-100" />
             <canvas ref={canvasRef} className="absolute inset-0 w-full h-full object-contain transform -scale-x-100" />
             
             {!hasPermission && (
-                <div className="absolute inset-0 bg-black/80 flex items-center justify-center">
+                <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-50">
                     <button onClick={handleConnect} className="bg-blue-600 px-8 py-4 rounded-xl font-bold text-white shadow-2xl">
-                        Enable Sensors & Camera
+                        Start Camera & Sensors
                     </button>
                 </div>
             )}
 
             {hasPermission && (
-                <div className="absolute bottom-0 w-full p-6 bg-black/60 backdrop-blur-md flex items-center gap-4">
-                    <select 
-                        value={scenario} 
-                        onChange={(e) => setScenario(e.target.value as Scenario)}
-                        disabled={isRecording}
-                        className="bg-gray-800 text-white p-3 rounded-lg flex-1"
-                    >
-                        <option value="REAL_Normal">REAL_Normal</option>
-                        <option value="REAL_WhiteWall">REAL_WhiteWall</option>
-                        <option value="REAL_Backlight">REAL_Backlight</option>
-                        <option value="REAL_Walking">REAL_Walking</option>
-                        <option value="Spoof_2DWall">Spoof_2DWall</option>
-                        <option value="Spoof_2DScreen">Spoof_2DScreen</option>
-                        <option value="Spoof_2DVideoReplay">Spoof_2DVideoReplay</option>
-                        <option value="Spoof_RandomMotion">Spoof_RandomMotion</option>
-                    </select>
+                <>
+                    {/* --- [เพิ่มใหม่] หน้าต่าง Review Mode (Overlay) --- */}
+                    {isReviewing && (
+                        <div className="absolute inset-0 bg-black/80 z-50 flex flex-col items-center justify-center space-y-6">
+                            <div className="text-white text-2xl font-bold">Recording Finished</div>
+                            <div className="text-gray-300">
+                                Captured Frames: <span className="text-yellow-400 font-mono text-xl">{recordedData.current.length}</span>
+                            </div>
+                            
+                            <div className="flex gap-4 mt-4">
+                                {/* ปุ่มลบทิ้ง */}
+                                <button 
+                                    onClick={handleDiscard}
+                                    className="px-8 py-4 bg-gray-600 hover:bg-gray-700 text-white rounded-xl font-bold text-lg"
+                                >
+                                    ❌ Discard & Retake
+                                </button>
+                                
+                                {/* ปุ่มยืนยัน Save */}
+                                <button 
+                                    onClick={handleConfirmUpload}
+                                    className="px-8 py-4 bg-green-600 hover:bg-green-700 text-white rounded-xl font-bold text-lg shadow-lg border-2 border-green-400"
+                                >
+                                    ✅ Confirm Save
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                    {/* ------------------------------------------- */}
 
-                    <button onClick={toggleRecording} className={`p-5 rounded-full ${isRecording ? 'bg-red-500' : 'bg-green-500'}`}>
-                        {isRecording ? <StopIcon /> : <RecordIcon />}
-                    </button>
+                    {/* UI เดิม (ซ่อนตอน Review เพื่อไม่ให้กดซ้ำ) */}
+                    {!isReviewing && (
+                        <div className="absolute bottom-0 w-full p-6 bg-black/60 backdrop-blur-md flex items-center gap-4 z-40">
+                            <select 
+                                value={scenario} 
+                                onChange={(e) => setScenario(e.target.value as Scenario)}
+                                disabled={isRecording}
+                                className="bg-gray-800 text-white p-3 rounded-lg flex-1"
+                            >
+                                <option value="REAL_Normal">Real - Normal</option>
+                                <option value="REAL_WhiteWall">Real - White Wall</option>
+                                <option value="REAL_Backlight">Real - Backlight</option>
+                                <option value="REAL_Walking">Real - Walking</option>
+                                <option value="Spoof_2DWall">Spoof - Photo Wall</option>
+                                <option value="Spoof_2DScreen">Spoof - Photo Screen</option>
+                                <option value="Spoof_VideoReplay">Spoof - Video Replay</option>
+                            </select>
 
-                    <div className="flex-1 flex justify-end">
-                        <Toast status={uploadStatus} message={errorMessage} />
-                    </div>
-                </div>
+                            <button onClick={toggleRecording} className={`p-5 rounded-full ${isRecording ? 'bg-red-500' : 'bg-green-500'}`}>
+                                {isRecording ? <StopIcon /> : <RecordIcon />}
+                            </button>
+
+                            <div className="flex-1 flex justify-end">
+                                <Toast status={uploadStatus} message={errorMessage} />
+                            </div>
+                        </div>
+                    )}
+                </>
             )}
         </div>
     );
