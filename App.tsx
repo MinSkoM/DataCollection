@@ -406,7 +406,8 @@ const App: React.FC = () => {
         setUploadStatus('uploading');
         try {
             // Use localhost:5000 as configured
-            const res = await fetch('http://localhost:5000/upload', {
+            const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+            const res = await fetch(`${apiUrl}/upload`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload),
