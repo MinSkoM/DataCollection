@@ -1,0 +1,7 @@
+{
+  "name": "Facial and Sensor Data Collector",
+  "description": "A web application to collect synchronized data from the camera (FaceMesh), device sensors (IMU), and optical flow for analysis. Data is sent to a local server for storage.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
