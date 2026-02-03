@@ -503,9 +503,9 @@ const App: React.FC = () => {
     }
 
     return (
-        <div className="relative w-screen h-screen overflow-hidden bg-black">
-            <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-contain transform -scale-x-100" />
-            <canvas ref={canvasRef} className="absolute inset-0 w-full h-full object-contain transform -scale-x-100" />
+        <div className="relative w-screen h-[100dvh] overflow-hidden bg-black">
+            <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover transform -scale-x-100" />
+            <canvas ref={canvasRef} className="absolute inset-0 w-full h-full object-cover transform -scale-x-100" />
             
             {!hasPermission && (
                 <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-50">
@@ -548,7 +548,7 @@ const App: React.FC = () => {
 
                     {/* UI เดิม (ซ่อนตอน Review เพื่อไม่ให้กดซ้ำ) */}
                     {!isReviewing && (
-                        <div className="absolute bottom-0 w-full p-6 bg-black/60 backdrop-blur-md flex items-center gap-4 z-40">
+                        <div className="absolute bottom-0 w-full p-6 pb-12 g-black/60 backdrop-blur-md flex items-center gap-4 z-40">
                             <select 
                                 value={scenario} 
                                 onChange={(e) => setScenario(e.target.value as Scenario)}
