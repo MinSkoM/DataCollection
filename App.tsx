@@ -257,19 +257,7 @@ const App: React.FC = () => {
             try {
                 // สร้าง Mat จาก Video (แต่ไม่วาดทับลง Canvas ที่เราวาดจุดไปแล้ว)
                 currentFrame = new cv.Mat(videoHeight, videoWidth, cv.CV_8UC4);
-                
-                // *Hack*: เราต้องดึงภาพจาก Video element มาวิเคราะห์ แต่ระวังอย่าไป drawImage ทับจุดที่เราวาด
-                // วิธีคือ: สร้าง canvas ชั่วคราว หรือใช้ OffscreenCanvas แต่ง่ายสุดคือ
-                // ยอมให้วิเคราะห์จาก Canvas เดิมก่อนวาดจุด (แต่เราวาดไปแล้ว)
-                // ดังนั้น: ใช้เทคนิค drawImage จาก video ลงบน Mat โดยตรงผ่าน temporary canvas หรือ
-                // เพื่อความง่าย: ให้ยอมรับว่า OpenCV จะ process ภาพที่อาจจะไม่มีจุด (เพราะเราดึงจาก videoRef)
-                
-                // ใช้ canvasCtx ชั่วคราวในการดึง pixel data (อันนี้อาจจะกิน resource นิดหน่อย)
-                // แต่เพื่อความชัวร์ เราจะดึงจาก videoRef โดยตรงไม่ได้ ต้องผ่าน canvas
-                // เพื่อประสิทธิภาพ เราจะข้ามขั้นตอนการวาด video ลง canvas หลัก 
-                // แต่จะใช้ offscreen logic ถ้าทำได้. แต่ในที่นี้ขอใช้วิธีดึงภาพจาก video ลง currentFrame ตรงๆ
-                
-                // สร้าง Canvas ชั่วคราวใน Memory เพื่อดึงภาพจาก Video (ไม่ให้กวนหน้าจอหลัก)
+            
                 const tempCanvas = document.createElement('canvas');
                 tempCanvas.width = videoWidth;
                 tempCanvas.height = videoHeight;
@@ -507,7 +495,7 @@ const App: React.FC = () => {
 
     return (
         <div className="relative w-screen h-[100dvh] overflow-hidden bg-black">
-            <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover transform -scale-x-100" />
+            <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-contain transform -scale-x-100" />
             <canvas ref={canvasRef} className="absolute inset-0 w-full h-full object-contain transform -scale-x-100" />
             
             {!hasPermission && (
@@ -548,52 +536,83 @@ const App: React.FC = () => {
                         </div>
                     )}
                     {/* ------------------------------------------- */}
-
                     {/* UI เดิม (ซ่อนตอน Review เพื่อไม่ให้กดซ้ำ) */}
                     {!isReviewing && (
-                        <div className="absolute bottom-0 w-full p-6 bg-black/60 backdrop-blur-md flex items-center gap-4 z-40">
-                            <select 
-                                value={type} 
+                        <div className="absolute bottom-0 w-full z-40">
+                            {/* Background Container: ทำเป็นแผ่น Card ลอยขึ้นมาจากด้านล่าง */}
+                            <div className="bg-black/80 backdrop-blur-md rounded-t-3xl p-5 flex flex-col gap-4 border-t border-white/10 shadow-2xl pb-8">
+                            
+                            {/* Settings Section: จัดเรียง Input */}
+                            <div className="flex flex-col gap-3">
+                                {/* Row 1: Type (ยาวที่สุด ให้กินพื้นที่เต็ม) */}
+                                <select
+                                value={type}
                                 onChange={(e) => setType(e.target.value as Type)}
                                 disabled={isRecording}
-                                className="bg-gray-800 text-white p-3 rounded-lg flex-30"
-                            >
+                                className="bg-gray-800/80 text-white text-sm p-3 rounded-xl border border-gray-700 focus:outline-none focus:border-green-500 w-full appearance-none"
+                                >
                                 <option value="REAL">Real</option>
                                 <option value="Spoof_2DScreen">Spoof - Photo Screen</option>
                                 <option value="Spoof_VideoReplay">Spoof - Video Replay</option>
                                 <option value="Spoof_TimeShift">Spoof - Time Shift</option>
-                            </select>
-                            <select 
-                                value={scenario} 
-                                onChange={(e) => setScenario(e.target.value as Scenario)}
-                                disabled={isRecording}
-                                className="bg-gray-800 text-white p-3 rounded-lg flex-15"
-                            >
-                                <option value="Normal">Normal</option>
-                                <option value="WhiteWall">White Wall</option>
-                                <option value="Backlight">Backlight</option>
-                                <option value="Walking">Walking</option>
-                            </select>
-                            <select 
-                                value={motion} 
-                                onChange={(e) => setMotion(e.target.value as Motion)}
-                                disabled={isRecording}
-                                className="bg-gray-800 text-white p-3 rounded-lg flex-20"
-                            >
-                                <option value="orbital_RL">orbital_RL</option>
-                                <option value="orbital_LR">orbital_LR</option>
-                                <option value="push-pull">push-pull</option>
-                                <option value="pull-push">pull-push</option>
-                                <option value="THT_R">THT_R</option>
-                                <option value="THT_L">THT_L</option>
-                            </select>
+                                </select>
 
-                            <button onClick={toggleRecording} className={`p-5 rounded-full ${isRecording ? 'bg-red-500' : 'bg-green-500'}`}>
-                                {isRecording ? <StopIcon /> : <RecordIcon />}
-                            </button>
+                                {/* Row 2: Scenario & Motion (แบ่งครึ่ง 50-50) */}
+                                <div className="grid grid-cols-2 gap-3">
+                                <select
+                                    value={scenario}
+                                    onChange={(e) => setScenario(e.target.value as Scenario)}
+                                    disabled={isRecording}
+                                    className="bg-gray-800/80 text-white text-sm p-3 rounded-xl border border-gray-700 focus:outline-none focus:border-green-500 appearance-none"
+                                >
+                                    <option value="Normal">Normal</option>
+                                    <option value="WhiteWall">White Wall</option>
+                                    <option value="Backlight">Backlight</option>
+                                    <option value="Walking">Walking</option>
+                                </select>
 
-                            <div className="flex-1 flex justify-end">
-                                <Toast status={uploadStatus} message={errorMessage} />
+                                <select
+                                    value={motion}
+                                    onChange={(e) => setMotion(e.target.value as Motion)}
+                                    disabled={isRecording}
+                                    className="bg-gray-800/80 text-white text-sm p-3 rounded-xl border border-gray-700 focus:outline-none focus:border-green-500 appearance-none"
+                                >
+                                    <option value="orbital_RL">Orbital R-L</option>
+                                    <option value="orbital_LR">Orbital L-R</option>
+                                    <option value="push-pull">Push-Pull</option>
+                                    <option value="pull-push">Pull-Push</option>
+                                    <option value="THT_R">THT R</option>
+                                    <option value="THT_L">THT L</option>
+                                </select>
+                                </div>
+                            </div>
+
+                            {/* Action Section: ปุ่มอัด และ Toast */}
+                            <div className="flex items-center justify-between mt-2">
+                                {/* Empty div for spacing balance if needed, or Toast placement */}
+                                <div className="flex-1">
+                                    {/* ย้าย Toast มาตรงนี้เพื่อให้เห็นชัดเวลาอัด */}
+                                    <Toast status={uploadStatus} message={errorMessage} />
+                                </div>
+
+                                {/* Record Button: ตรงกลาง ใหญ่ๆ กดง่าย */}
+                                <button
+                                onClick={toggleRecording}
+                                className={`relative flex items-center justify-center w-20 h-20 rounded-full border-4 border-white/20 transition-all duration-200 active:scale-95 shadow-lg mx-4 ${
+                                    isRecording ? 'bg-red-500/20' : 'bg-white/10'
+                                }`}
+                                >
+                                <div
+                                    className={`transition-all duration-300 rounded-md ${
+                                    isRecording 
+                                        ? 'w-8 h-8 bg-red-500 rounded-sm' // Stop icon style
+                                        : 'w-16 h-16 bg-red-600 rounded-full border-2 border-white' // Record icon style
+                                    }`}
+                                />
+                                </button>
+
+                                <div className="flex-1"></div> {/* Spacer for symmetry */}
+                            </div>
                             </div>
                         </div>
                     )}
