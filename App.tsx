@@ -41,6 +41,7 @@ const App: React.FC = () => {
     // Optical Flow Refs
     const prevGray = useRef<any>(null);
     const backgroundPoints = useRef<any>(null);
+    const prevNoseRef = useRef<{x: number, y: number} | null>(null);
 
     // --- 1. Load Libraries Logic ---
     const loadLibraries = useCallback(() => {
@@ -193,46 +194,61 @@ const App: React.FC = () => {
             canvasRef.current.height = videoHeight;
         }
         
-        // --- 1. CLEAR CANVAS (ล้างหน้าจอทุกเฟรม เพื่อวาดใหม่) ---
+        // --- 1. CLEAR CANVAS ---
         canvasCtx.clearRect(0, 0, videoWidth, videoHeight);
         
         let faceLandmarks: FaceMeshResult | null = null;
         let faceBoundingBox = null;
+        
+        // ตัวแปรสำหรับ Relative Motion
+        let noseX = 0, noseY = 0;
+        let faceDx = 0, faceDy = 0;
 
-        // --- 2. DRAWING LOGIC (วาดตลอดเวลา ไม่สนว่าอัดอยู่ไหม) ---
+        // --- 2. DRAWING LOGIC & FACE TRACKING ---
         if (results.multiFaceLandmarks && results.multiFaceLandmarks[0]) {
             const landmarks = results.multiFaceLandmarks[0];
             
-            // เตรียมข้อมูล
+            // A. เตรียมข้อมูล FaceMesh
             faceLandmarks = {
                 all: landmarks,
                 specific: FACEMESH_LANDMARK_INDICES.map(i => landmarks[i]),
                 flat: FACEMESH_LANDMARK_INDICES.flatMap(i => [landmarks[i].x, landmarks[i].y, landmarks[i].z])
             };
 
-            // A. วาดโครงสร้างหน้า (468 จุด) - สีฟ้าจางๆ
-            canvasCtx.fillStyle = 'rgba(0, 255, 255, 0.4)'; // Cyan, โปร่งแสง
+            // B. คำนวณ Face Motion (จากจมูก Index 1)
+            const nose = landmarks[1];
+            noseX = nose.x * videoWidth;
+            noseY = nose.y * videoHeight;
+
+            if (prevNoseRef.current) {
+                faceDx = noseX - prevNoseRef.current.x;
+                faceDy = noseY - prevNoseRef.current.y;
+            }
+            // อัปเดตตำแหน่งจมูกล่าสุด
+            prevNoseRef.current = { x: noseX, y: noseY };
+
+            // C. วาดโครงสร้างหน้า
+            canvasCtx.fillStyle = 'rgba(0, 255, 255, 0.4)';
             landmarks.forEach((lm: Point) => {
                 const x = lm.x * videoWidth;
                 const y = lm.y * videoHeight;
                 canvasCtx.beginPath();
-                canvasCtx.arc(x, y, 1, 0, 2 * Math.PI); // จุดเล็ก
+                canvasCtx.arc(x, y, 1, 0, 2 * Math.PI);
                 canvasCtx.fill();
             });
 
-            // B. วาดจุดสำคัญ (28 จุด) - สีเขียวสว่าง
-            canvasCtx.fillStyle = '#00FF00'; // Green
-
+            // D. วาดจุดสำคัญ
+            canvasCtx.fillStyle = '#00FF00';
             faceLandmarks.specific.forEach((lm: Point) => {
                 const x = lm.x * videoWidth;
                 const y = lm.y * videoHeight;
                 canvasCtx.beginPath();
-                canvasCtx.arc(x, y, 2, 0, 2 * Math.PI); // จุดใหญ่
+                canvasCtx.arc(x, y, 2, 0, 2 * Math.PI);
                 canvasCtx.fill();
                 canvasCtx.stroke();
             });
 
-            // คำนวณ Bounding Box สำหรับ OpenCV
+            // E. คำนวณ Bounding Box (สำหรับ Mask OpenCV)
             const xs = landmarks.map((l: Point) => l.x);
             const ys = landmarks.map((l: Point) => l.y);
             faceBoundingBox = {
@@ -241,28 +257,27 @@ const App: React.FC = () => {
             };
         }
 
-        // --- 3. OpenCV Processing & bg_variance Calculation ---
+        // --- 3. OpenCV Processing & Optical Flow ---
         const cv = (window as any).cv;
-        let currentBgVariance = 0; 
+        let currentBgVariance = 0;
+        let flowStats = { count: 0, avgX: 0, avgY: 0, avgMag: 0 };
 
         if (cv && cv.Mat && videoWidth > 0) {
             let currentFrame: any = null;
             let currentGray: any = null;
             let mask: any = null;
-            let tempPoints: any = null;
             let nextPoints: any = null;
             let status: any = null;
             let err: any = null;
 
             try {
-                // สร้าง Mat จาก Video (แต่ไม่วาดทับลง Canvas ที่เราวาดจุดไปแล้ว)
+                // เตรียมภาพ Grayscale
                 currentFrame = new cv.Mat(videoHeight, videoWidth, cv.CV_8UC4);
-            
                 const tempCanvas = document.createElement('canvas');
                 tempCanvas.width = videoWidth;
                 tempCanvas.height = videoHeight;
                 const tempCtx = tempCanvas.getContext('2d');
-                if(tempCtx) {
+                if (tempCtx) {
                     tempCtx.drawImage(videoRef.current, 0, 0, videoWidth, videoHeight);
                     const frameImageData = tempCtx.getImageData(0, 0, videoWidth, videoHeight);
                     currentFrame.data.set(frameImageData.data);
@@ -272,30 +287,49 @@ const App: React.FC = () => {
                 cv.cvtColor(currentFrame, currentGray, cv.COLOR_RGBA2GRAY);
 
                 if (prevGray.current) {
-                    // 1. Initial Points Detection
-                    if (!backgroundPoints.current || backgroundPoints.current.rows === 0) {
-                        mask = new cv.Mat.zeros(videoHeight, videoWidth, cv.CV_8U);
-                        if (faceBoundingBox) {
-                            const x = faceBoundingBox.xMin * videoWidth - 20;
-                            const y = faceBoundingBox.yMin * videoHeight - 20;
-                            const w = (faceBoundingBox.xMax - faceBoundingBox.xMin) * videoWidth + 40;
-                            const h = (faceBoundingBox.yMax - faceBoundingBox.yMin) * videoHeight + 40;
-                            
-                            if (x >= 0 && y >= 0 && x + w <= videoWidth && y + h <= videoHeight) {
-                                cv.rectangle(mask, new cv.Point(x, y), new cv.Point(x + w, y + h), new cv.Scalar(255), -1);
-                                cv.bitwise_not(mask, mask);
-                            } else {
-                                mask.setTo(new cv.Scalar(255));
-                            }
-                        } else {
-                            mask.setTo(new cv.Scalar(255));
+                    // ---------------------------------------------------------
+                    // 3.1 Initial Points Detection (แก้ Bug จุดค้าง + Mask หลุด)
+                    // ---------------------------------------------------------
+                    if (!backgroundPoints.current || backgroundPoints.current.rows < 30) {
+                        
+                        if (backgroundPoints.current) {
+                            backgroundPoints.current.delete();
+                            backgroundPoints.current = null;
                         }
-                        tempPoints = new cv.Mat();
-                        cv.goodFeaturesToTrack(currentGray, tempPoints, 10, 0.1, 10, mask, 7, false, 0.04);
-                        backgroundPoints.current = tempPoints; 
+
+                        // สร้าง Mask สีขาว (พื้นที่ยอมให้จับจุด)
+                        mask = new cv.Mat(videoHeight, videoWidth, cv.CV_8U, new cv.Scalar(255));
+                        
+                        if (faceBoundingBox) {
+                            // คำนวณกรอบหน้า + ขยายขอบ 20px (Clamping ไม่ให้หลุดจอ)
+                            let x = Math.floor(faceBoundingBox.xMin * videoWidth - 20);
+                            let y = Math.floor(faceBoundingBox.yMin * videoHeight - 20);
+                            let w = Math.floor((faceBoundingBox.xMax - faceBoundingBox.xMin) * videoWidth + 40);
+                            let h = Math.floor((faceBoundingBox.yMax - faceBoundingBox.yMin) * videoHeight + 40);
+                            
+                            let x1 = Math.max(0, x);
+                            let y1 = Math.max(0, y);
+                            let x2 = Math.min(videoWidth, x + w);
+                            let y2 = Math.min(videoHeight, y + h);
+
+                            // ระบายสีดำทับหน้า (ห้ามจับจุดบนหน้า)
+                            if (x2 > x1 && y2 > y1) {
+                                cv.rectangle(mask, new cv.Point(x1, y1), new cv.Point(x2, y2), new cv.Scalar(0), -1);
+                            }
+                        }
+
+                        // หาจุดบน BG
+                        const newDetectedPoints = new cv.Mat();
+                        // minDistance = 15 เพื่อให้จุดกระจายตัว
+                        cv.goodFeaturesToTrack(currentGray, newDetectedPoints, 100, 0.01, 15, mask, 3, false, 0.04);
+                        
+                        // Assign ให้ Ref ถือครอง (ห้าม delete newDetectedPoints ใน finally)
+                        backgroundPoints.current = newDetectedPoints; 
                     }
 
-                    // 2. Optical Flow
+                    // ---------------------------------------------------------
+                    // 3.2 Optical Flow Calculation
+                    // ---------------------------------------------------------
                     if (backgroundPoints.current && backgroundPoints.current.rows > 0) {
                         nextPoints = new cv.Mat();
                         status = new cv.Mat();
@@ -309,32 +343,54 @@ const App: React.FC = () => {
 
                         let goodNewPoints = [];
                         let movements: number[] = [];
+                        
+                        let sumDx = 0, sumDy = 0, sumMag = 0;
+                        let validCount = 0;
 
                         for (let i = 0; i < st.length; i++) {
                             if (st[i] === 1) {
                                 goodNewPoints.push(p1[i * 2], p1[i * 2 + 1]);
-                                const xOld = p0[i * 2];
-                                const yOld = p0[i * 2 + 1];
-                                const xNew = p1[i * 2];
-                                const yNew = p1[i * 2 + 1];
-                                const dist = Math.sqrt(Math.pow(xNew - xOld, 2) + Math.pow(yNew - yOld, 2));
+                                
+                                const dx = p1[i * 2] - p0[i * 2];
+                                const dy = p1[i * 2 + 1] - p0[i * 2 + 1];
+                                const dist = Math.sqrt(dx*dx + dy*dy);
+                                
                                 movements.push(dist);
+                                sumDx += dx;
+                                sumDy += dy;
+                                sumMag += dist;
+                                validCount++;
                             }
                         }
 
+                        // คำนวณ Variance
                         if (movements.length > 0) {
                             const mean = movements.reduce((a, b) => a + b, 0) / movements.length;
                             const sqDiffs = movements.map(val => Math.pow(val - mean, 2));
                             currentBgVariance = sqDiffs.reduce((a, b) => a + b, 0) / movements.length;
                         }
 
+                        // อัปเดต Flow Stats
+                        if (validCount > 0) {
+                            flowStats = {
+                                count: validCount,
+                                avgX: sumDx / validCount,
+                                avgY: sumDy / validCount,
+                                avgMag: sumMag / validCount
+                            };
+                        }
+
+                        // อัปเดตจุดสำหรับรอบถัดไป
                         if (backgroundPoints.current) backgroundPoints.current.delete();
-                        backgroundPoints.current = goodNewPoints.length > 0 
-                             ? cv.matFromArray(goodNewPoints.length / 2, 1, cv.CV_32FC2, goodNewPoints)
-                             : null;
+                        if (goodNewPoints.length > 0) {
+                            backgroundPoints.current = cv.matFromArray(goodNewPoints.length / 2, 1, cv.CV_32FC2, goodNewPoints);
+                        } else {
+                            backgroundPoints.current = null;
+                        }
                     }
                 }
 
+                // Update prevGray
                 if (prevGray.current) prevGray.current.delete();
                 prevGray.current = currentGray;
                 currentGray = null;
@@ -344,12 +400,14 @@ const App: React.FC = () => {
                 if (backgroundPoints.current) { backgroundPoints.current.delete(); backgroundPoints.current = null; }
                 if (prevGray.current) { prevGray.current.delete(); prevGray.current = null; }
             } finally {
+                // Cleanup Memory
                 if (currentFrame) currentFrame.delete();
                 if (currentGray) currentGray.delete();
                 if (mask) mask.delete();
                 if (nextPoints) nextPoints.delete();
                 if (status) status.delete();
                 if (err) err.delete();
+                // *ไม่ต้องลบ tempPoints/newDetectedPoints เพราะส่งให้ ref ไปแล้ว*
             }
         }
 
@@ -357,54 +415,61 @@ const App: React.FC = () => {
         if (isRecordingRef.current) { 
             const timestamp = Date.now();
             const { accel, gyro } = interpolateSensorData(timestamp);
-            const opticalFlowPoints = backgroundPoints.current ? Array.from(backgroundPoints.current.data32F as number[]) : [];
             
-            // --- [แก้ใหม่ล่าสุด] บังคับจับภาพ (Simple Capture) ---
+            // Capture Image
             let imageBase64 = null;
-            
-            // ไม่ต้องเช็ค readyState เยอะ เอาแค่มี video และขนาดไม่เป็น 0 ก็พอ
             if (videoRef.current && videoRef.current.videoWidth > 0) {
                 try {
                     const videoEl = videoRef.current;
                     const tempCanvas = document.createElement('canvas');
-                    
-                    // ลดขนาดภาพลง (480px) เพื่อให้ส่งทันและไฟล์ไม่ใหญ่เกินไป
                     const scale = 480 / videoEl.videoWidth;
                     tempCanvas.width = 480;
                     tempCanvas.height = videoEl.videoHeight * scale;
-                    
                     const tempCtx = tempCanvas.getContext('2d');
                     if (tempCtx) {
                         tempCtx.drawImage(videoEl, 0, 0, tempCanvas.width, tempCanvas.height);
-                        // แปลงเป็น Base64 (.jpg)
                         imageBase64 = tempCanvas.toDataURL('image/jpeg', 0.7);
                     }
                 } catch (err) {
-                    console.error("❌ Capture Error:", err);
+                    console.error("Capture Error:", err);
                 }
-            } else {
-                console.warn("⚠️ Video not ready for capture");
             }
-            // ----------------------------------------------------
+
+            // คำนวณ Relative Motion (Face vs BG)
+            const relativeX = faceDx - flowStats.avgX;
+            const relativeY = faceDy - flowStats.avgY;
+            const relativeMag = Math.sqrt(relativeX * relativeX + relativeY * relativeY);
 
             recordedData.current.push({
                 timestamp,
                 faceMesh: faceLandmarks ? faceLandmarks.flat : null,
                 sensors: { accel, gyro },
-                opticalFlow: opticalFlowPoints,
+                
+                // ส่ง Stats แทนจุดดิบ
+                opticalFlowStats: {
+                    ...flowStats,
+                    variance: currentBgVariance
+                },
+                
+                // ส่งค่าวิเคราะห์การเคลื่อนที่ (สำคัญสำหรับ Anti-Spoofing)
+                motion_analysis: {
+                    face_dx: faceDx,
+                    face_dy: faceDy,
+                    bg_dx: flowStats.avgX,
+                    bg_dy: flowStats.avgY,
+                    relative_magnitude: relativeMag // ค่าสูง = ดี (3D), ค่าต่ำ = รูปภาพ (2D)
+                },
+
                 bg_variance: currentBgVariance,
-                image: imageBase64 // <--- ส่งรูป
+                image: imageBase64
             });
             
-            // --- Log เช็คหน้างานทันที ---
             if (recordedData.current.length % 30 === 0) {
-                // ถ้า imageBase64 มีค่า มันจะแสดงคำว่า "📸 Got Image"
-                // ถ้าไม่มี จะแสดง "❌ No Image"
-                const hasImg = imageBase64 ? "📸 Got Image" : "❌ No Image";
-                console.log(`Rec: ${recordedData.current.length} frames | ${hasImg}`);
+                const hasImg = imageBase64 ? "📸 Img" : "❌ No Img";
+                console.log(`Rec: ${recordedData.current.length} | Flow: ${flowStats.count} | RelMag: ${relativeMag.toFixed(2)} | ${hasImg}`);
             }
         }
-    }, []); 
+    }, []);
 
     const gameLoop = useCallback(async () => {
         if (!faceMeshRef.current || !videoRef.current || videoRef.current.readyState < 3) {
