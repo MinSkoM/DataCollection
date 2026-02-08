@@ -23,17 +23,18 @@ def upload_data():
         if not data:
             return jsonify({"status": "error", "message": "No data received"}), 400
 
-        # รับข้อมูล Scenario
         scenario = data.get("scenario", "unknown")
+        type = data.get("type", "unknown")
+        motion = data.get("motion", "unknown")
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         
         # สร้างโฟลเดอร์สำหรับรอบการอัดนี้โดยเฉพาะ (เช่น collected_data/spoof_2023...)
-        session_folder = f"{SAVE_FOLDER}/{scenario}_{timestamp}"
+        session_folder = f"{SAVE_FOLDER}/{type}_{scenario}_{motion}_{timestamp}"
         if not os.path.exists(session_folder):
             os.makedirs(session_folder)
             
         # สร้างโฟลเดอร์เก็บรูปภาพข้างใน
-        images_folder = f"{session_folder}/{scenario}_images"
+        images_folder = f"{session_folder}/images"
         if not os.path.exists(images_folder):
             os.makedirs(images_folder)
 

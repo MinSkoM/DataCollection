@@ -23,7 +23,9 @@ const App: React.FC = () => {
     const isRecordingRef = useRef(false);
 
     // แก้ไขค่าเริ่มต้นให้ตรงกับ Dropdown
-    const [scenario, setScenario] = useState<Scenario>('REAL_Normal');
+    const [scenario, setScenario] = useState<Scenario>('Normal');
+    const [type, setType] = useState<string>('REAL');
+    const [motion, setMotion] = useState<string>('orbital_RL');
     
     const [uploadStatus, setUploadStatus] = useState<UploadStatus>('idle');
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -462,7 +464,8 @@ const App: React.FC = () => {
 
     const handleConfirmUpload = () => {
         setIsReviewing(false); // ปิดหน้าต่าง Review
-        uploadData({ scenario, data: recordedData.current }); // ส่งข้อมูล
+        uploadData({ type, scenario, motion, data: recordedData.current }); // ส่งข้อมูล
+        
     };
 
     const handleDiscard = () => {
@@ -505,7 +508,7 @@ const App: React.FC = () => {
     return (
         <div className="relative w-screen h-[100dvh] overflow-hidden bg-black">
             <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover transform -scale-x-100" />
-            <canvas ref={canvasRef} className="absolute inset-0 w-full h-full object-cover transform -scale-x-100" />
+            <canvas ref={canvasRef} className="absolute inset-0 w-full h-full object-contain transform -scale-x-100" />
             
             {!hasPermission && (
                 <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-50">
@@ -548,20 +551,41 @@ const App: React.FC = () => {
 
                     {/* UI เดิม (ซ่อนตอน Review เพื่อไม่ให้กดซ้ำ) */}
                     {!isReviewing && (
-                        <div className="absolute bottom-0 w-full p-6 pb-12 g-black/60 backdrop-blur-md flex items-center gap-4 z-40">
+                        <div className="absolute bottom-0 w-full p-6 bg-black/60 backdrop-blur-md flex items-center gap-4 z-40">
+                            <select 
+                                value={type} 
+                                onChange={(e) => setType(e.target.value as Type)}
+                                disabled={isRecording}
+                                className="bg-gray-800 text-white p-3 rounded-lg flex-30"
+                            >
+                                <option value="REAL">Real</option>
+                                <option value="Spoof_2DScreen">Spoof - Photo Screen</option>
+                                <option value="Spoof_VideoReplay">Spoof - Video Replay</option>
+                                <option value="Spoof_TimeShift">Spoof - Time Shift</option>
+                            </select>
                             <select 
                                 value={scenario} 
                                 onChange={(e) => setScenario(e.target.value as Scenario)}
                                 disabled={isRecording}
-                                className="bg-gray-800 text-white p-3 rounded-lg flex-1"
+                                className="bg-gray-800 text-white p-3 rounded-lg flex-15"
                             >
-                                <option value="REAL_Normal">Real - Normal</option>
-                                <option value="REAL_WhiteWall">Real - White Wall</option>
-                                <option value="REAL_Backlight">Real - Backlight</option>
-                                <option value="REAL_Walking">Real - Walking</option>
-                                <option value="Spoof_2DWall">Spoof - Photo Wall</option>
-                                <option value="Spoof_2DScreen">Spoof - Photo Screen</option>
-                                <option value="Spoof_VideoReplay">Spoof - Video Replay</option>
+                                <option value="Normal">Normal</option>
+                                <option value="WhiteWall">White Wall</option>
+                                <option value="Backlight">Backlight</option>
+                                <option value="Walking">Walking</option>
+                            </select>
+                            <select 
+                                value={motion} 
+                                onChange={(e) => setMotion(e.target.value as Motion)}
+                                disabled={isRecording}
+                                className="bg-gray-800 text-white p-3 rounded-lg flex-20"
+                            >
+                                <option value="orbital_RL">orbital_RL</option>
+                                <option value="orbital_LR">orbital_LR</option>
+                                <option value="push-pull">push-pull</option>
+                                <option value="pull-push">pull-push</option>
+                                <option value="THT_R">THT_R</option>
+                                <option value="THT_L">THT_L</option>
                             </select>
 
                             <button onClick={toggleRecording} className={`p-5 rounded-full ${isRecording ? 'bg-red-500' : 'bg-green-500'}`}>
