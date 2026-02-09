@@ -542,139 +542,142 @@ const App: React.FC = () => {
     }
 
     return (
-        <div className="relative w-screen h-[100dvh] overflow-hidden bg-black">
-            {/* --- [MODIFIED] Video & Canvas Style --- */}
-            {/* Logic: กล้องหน้า (user) ให้ Mirror, กล้องหลัง (environment) ให้ปกติ (none) */}
-            <video 
-                ref={videoRef} 
-                autoPlay playsInline muted 
-                className="absolute inset-0 w-full h-full object-contain"
-                style={{ transform: facingMode === 'user' ? 'scaleX(-1)' : 'none' }} 
-            />
-            <canvas 
-                ref={canvasRef} 
-                className="absolute inset-0 w-full h-full object-contain"
-                style={{ transform: facingMode === 'user' ? 'scaleX(-1)' : 'none' }}
-            />
+        // เปลี่ยน Main Container เป็น Flex Column เพื่อแบ่งบน-ล่าง
+        <div className="flex flex-col h-[100dvh] bg-black overflow-hidden">
             
-            {/* --- [NEW] Switch Camera Button (Top-Right) --- */}
-            {hasPermission && !isRecording && !isReviewing && (
-                <button 
-                    onClick={toggleCamera}
-                    className="absolute top-6 right-6 p-3 bg-gray-800/80 rounded-full backdrop-blur-sm z-50 hover:bg-gray-700 border border-white/20 shadow-lg"
-                    title="Switch Camera"
-                >
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6 text-white">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
-                    </svg>
-                </button>
-            )}
+            {/* --- ส่วนที่ 1: พื้นที่แสดงผลกล้อง (ยืดเต็มพื้นที่ที่เหลือ) --- */}
+            <div className="relative flex-1 min-h-0 w-full bg-black overflow-hidden group">
+                <video 
+                    ref={videoRef} 
+                    autoPlay playsInline muted 
+                    className="absolute inset-0 w-full h-full object-contain"
+                    style={{ transform: facingMode === 'user' ? 'scaleX(-1)' : 'none' }} 
+                />
+                <canvas 
+                    ref={canvasRef} 
+                    className="absolute inset-0 w-full h-full object-contain"
+                    style={{ transform: facingMode === 'user' ? 'scaleX(-1)' : 'none' }}
+                />
 
-            {!hasPermission && (
-                <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-50">
-                    <button onClick={handleConnect} className="bg-blue-600 px-8 py-4 rounded-xl font-bold text-white shadow-2xl">
-                        Start Camera & Sensors
+                {/* ปุ่มสลับกล้อง (ย้ายมาอยู่ในกรอบวิดีโอ) */}
+                {hasPermission && !isRecording && !isReviewing && (
+                    <button 
+                        onClick={toggleCamera}
+                        className="absolute top-4 right-4 p-3 bg-gray-800/60 hover:bg-gray-700/80 rounded-full backdrop-blur-sm z-30 text-white border border-white/10 shadow-lg transition-all"
+                        title="Switch Camera"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+                        </svg>
                     </button>
-                </div>
-            )}
+                )}
 
-            {hasPermission && (
-                <>
-                    {/* Review Mode */}
-                    {isReviewing && (
-                        <div className="absolute inset-0 bg-black/80 z-50 flex flex-col items-center justify-center space-y-6">
-                            <div className="text-white text-2xl font-bold">Recording Finished</div>
-                            <div className="text-gray-300">
-                                Captured Frames: <span className="text-yellow-400 font-mono text-xl">{recordedData.current.length}</span>
-                            </div>
-                            
-                            <div className="flex gap-4 mt-4">
-                                <button 
-                                    onClick={handleDiscard}
-                                    className="px-8 py-4 bg-gray-600 hover:bg-gray-700 text-white rounded-xl font-bold text-lg"
-                                >
-                                    ❌ Discard & Retake
-                                </button>
-                                <button 
-                                    onClick={handleConfirmUpload}
-                                    className="px-8 py-4 bg-green-600 hover:bg-green-700 text-white rounded-xl font-bold text-lg shadow-lg border-2 border-green-400"
-                                >
-                                    ✅ Confirm Save
-                                </button>
-                            </div>
+                {/* หน้าขออนุญาตกล้อง */}
+                {!hasPermission && (
+                    <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-50">
+                        <button onClick={handleConnect} className="bg-blue-600 px-8 py-4 rounded-xl font-bold text-white shadow-2xl hover:bg-blue-500 transition-colors">
+                            Start Camera & Sensors
+                        </button>
+                    </div>
+                )}
+
+                {/* Review Mode Overlay (ยังคงทับวิดีโอได้เพราะเป็นการเช็คภาพ) */}
+                {isReviewing && (
+                    <div className="absolute inset-0 bg-black/90 z-50 flex flex-col items-center justify-center space-y-6 p-4 text-center">
+                        <div className="text-white text-2xl font-bold">Recording Finished</div>
+                        <div className="text-gray-300">
+                            Captured Frames: <span className="text-yellow-400 font-mono text-xl">{recordedData.current.length}</span>
                         </div>
-                    )}
+                        
+                        <div className="flex gap-4 mt-4 w-full justify-center">
+                            <button 
+                                onClick={handleDiscard}
+                                className="px-6 py-3 bg-gray-600 hover:bg-gray-700 text-white rounded-xl font-bold"
+                            >
+                                ❌ Discard
+                            </button>
+                            <button 
+                                onClick={handleConfirmUpload}
+                                className="px-6 py-3 bg-green-600 hover:bg-green-700 text-white rounded-xl font-bold shadow-lg border-2 border-green-400"
+                            >
+                                ✅ Save
+                            </button>
+                        </div>
+                    </div>
+                )}
+            </div>
 
-                    {/* Controls */}
-                    {!isReviewing && (
-                        <div className="absolute bottom-0 w-full z-40">
-                            <div className="bg-black/80 backdrop-blur-md rounded-t-3xl p-5 flex flex-col gap-4 border-t border-white/10 shadow-2xl pb-8">
-                            
-                            <div className="flex flex-col gap-3">
-                                <select
-                                value={type}
-                                onChange={(e) => setType(e.target.value)}
+            {/* --- ส่วนที่ 2: แผงควบคุม (Console) แยกออกมาด้านล่าง ไม่บังจอ --- */}
+            {hasPermission && !isReviewing && (
+                <div className="shrink-0 z-40 w-full bg-gray-900 border-t border-white/10 pb-safe">
+                    <div className="p-4 flex flex-col gap-3 max-w-lg mx-auto w-full">
+                        
+                        {/* Dropdowns Row 1 */}
+                        <select
+                            value={type}
+                            onChange={(e) => setType(e.target.value)}
+                            disabled={isRecording}
+                            className="bg-gray-800 text-white text-sm p-3 rounded-xl border border-gray-700 focus:outline-none focus:border-green-500 w-full"
+                        >
+                            <option value="REAL">Real</option>
+                            <option value="Spoof_2DScreen">Spoof - Photo Screen</option>
+                            <option value="Spoof_VideoReplay">Spoof - Video Replay</option>
+                            <option value="Spoof_TimeShift">Spoof - Time Shift</option>
+                        </select>
+
+                        {/* Dropdowns Row 2 */}
+                        <div className="grid grid-cols-2 gap-3">
+                            <select
+                                value={scenario}
+                                onChange={(e) => setScenario(e.target.value as Scenario)}
                                 disabled={isRecording}
-                                className="bg-gray-800/80 text-white text-sm p-3 rounded-xl border border-gray-700 focus:outline-none focus:border-green-500 w-full appearance-none"
-                                >
-                                <option value="REAL">Real</option>
-                                <option value="Spoof_2DScreen">Spoof - Photo Screen</option>
-                                <option value="Spoof_VideoReplay">Spoof - Video Replay</option>
-                                <option value="Spoof_TimeShift">Spoof - Time Shift</option>
-                                </select>
+                                className="bg-gray-800 text-white text-sm p-3 rounded-xl border border-gray-700 focus:outline-none focus:border-green-500"
+                            >
+                                <option value="Normal">Normal</option>
+                                <option value="WhiteWall">White Wall</option>
+                                <option value="Walking">Walking</option>
+                            </select>
 
-                                <div className="grid grid-cols-2 gap-3">
-                                <select
-                                    value={scenario}
-                                    onChange={(e) => setScenario(e.target.value as Scenario)}
-                                    disabled={isRecording}
-                                    className="bg-gray-800/80 text-white text-sm p-3 rounded-xl border border-gray-700 focus:outline-none focus:border-green-500 appearance-none"
-                                >
-                                    <option value="Normal">Normal</option>
-                                    <option value="WhiteWall">White Wall</option>
-                                    <option value="Walking">Walking</option>
-                                </select>
+                            <select
+                                value={motion}
+                                onChange={(e) => setMotion(e.target.value)}
+                                disabled={isRecording}
+                                className="bg-gray-800 text-white text-sm p-3 rounded-xl border border-gray-700 focus:outline-none focus:border-green-500"
+                            >
+                                <option value="orbital_RL">Orbital R-L</option>
+                                <option value="orbital_LR">Orbital L-R</option>
+                                <option value="push-pull">Push-Pull</option>
+                                <option value="pull-push">Pull-Push</option>
+                                <option value="THT_R">THT R</option>
+                                <option value="THT_L">THT L</option>
+                            </select>
+                        </div>
 
-                                <select
-                                    value={motion}
-                                    onChange={(e) => setMotion(e.target.value)}
-                                    disabled={isRecording}
-                                    className="bg-gray-800/80 text-white text-sm p-3 rounded-xl border border-gray-700 focus:outline-none focus:border-green-500 appearance-none"
-                                >
-                                    <option value="orbital_RL">Orbital R-L</option>
-                                    <option value="orbital_LR">Orbital L-R</option>
-                                    <option value="push-pull">Push-Pull</option>
-                                    <option value="pull-push">Pull-Push</option>
-                                    <option value="THT_R">THT R</option>
-                                    <option value="THT_L">THT L</option>
-                                </select>
-                                </div>
+                        {/* Record Button & Status Row */}
+                        <div className="flex items-center justify-between mt-2 px-2">
+                            <div className="flex-1 flex justify-start">
+                                <Toast status={uploadStatus} message={errorMessage} />
                             </div>
-
-                            <div className="flex items-center justify-between mt-2">
-                                <div className="flex-1">
-                                    <Toast status={uploadStatus} message={errorMessage} />
-                                </div>
-                                <button
+                            
+                            <button
                                 onClick={toggleRecording}
-                                className={`relative flex items-center justify-center w-20 h-20 rounded-full border-4 border-white/20 transition-all duration-200 active:scale-95 shadow-lg mx-4 ${
-                                    isRecording ? 'bg-red-500/20' : 'bg-white/10'
+                                className={`relative flex items-center justify-center w-16 h-16 rounded-full border-4 border-white/20 transition-all duration-200 active:scale-95 shadow-lg mx-4 ${
+                                    isRecording ? 'bg-red-900/50 border-red-500' : 'bg-white/5 hover:bg-white/10'
                                 }`}
-                                >
+                            >
                                 <div
-                                    className={`transition-all duration-300 rounded-md ${
+                                    className={`transition-all duration-300 ${
                                     isRecording 
-                                        ? 'w-8 h-8 bg-red-500 rounded-sm' 
-                                        : 'w-16 h-16 bg-red-600 rounded-full border-2 border-white' 
+                                        ? 'w-6 h-6 bg-red-500 rounded-sm' 
+                                        : 'w-12 h-12 bg-red-600 rounded-full border-2 border-white' 
                                     }`}
                                 />
-                                </button>
-                                <div className="flex-1"></div>
-                            </div>
-                            </div>
+                            </button>
+                            
+                            <div className="flex-1"></div>
                         </div>
-                    )}
-                </>
+                    </div>
+                </div>
             )}
         </div>
     );
