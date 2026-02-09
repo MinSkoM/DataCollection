@@ -416,9 +416,9 @@ const App: React.FC = () => {
             
             // หมายเหตุ: Gyro อาจต้องปรับตามแกนการหมุน แต่ Accel X คือสิ่งที่ส่งผลกับการแยกแยะซ้ายขวามากที่สุดในการเทรน
             const adjustedGyro = gyro ? {
-                x: gyro.x,
-                y: gyro.y, 
-                z: gyro.z
+                x: gyro.beta || 0,   // แก้จาก gyro.x เป็น gyro.beta
+                y: gyro.gamma || 0,  // แก้จาก gyro.y เป็น gyro.gamma
+                z: gyro.alpha || 0   // แก้จาก gyro.z เป็น gyro.alpha
             } : null;
 
             // Capture Image
