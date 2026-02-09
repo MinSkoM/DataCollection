@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { FACEMESH_LANDMARK_INDICES } from './constants';
 import type { Scenario, UploadStatus, SensorData, FrameData, FaceMeshResult, Point } from './types';
-import { LoadingSpinner, CheckCircleIcon, ExclamationTriangleIcon, RecordIcon, StopIcon } from './components/Icons';
+import { LoadingSpinner, CheckCircleIcon, ExclamationTriangleIcon } from './components/Icons';
 
 // Helper function to check for iOS
 const isIOS = () => /iPhone|iPad|iPod/i.test(navigator.userAgent);
@@ -17,18 +17,24 @@ const App: React.FC = () => {
 
     const [hasPermission, setHasPermission] = useState(false);
     const [isRecording, setIsRecording] = useState(false);
-    
     const [isReviewing, setIsReviewing] = useState(false);
-    // Ref for recording state to avoid stale closures
+    
+    // Ref for recording state
     const isRecordingRef = useRef(false);
 
-    // แก้ไขค่าเริ่มต้นให้ตรงกับ Dropdown
+    // Dropdown States
     const [scenario, setScenario] = useState<Scenario>('Normal');
     const [type, setType] = useState<string>('REAL');
     const [motion, setMotion] = useState<string>('orbital_RL');
     
     const [uploadStatus, setUploadStatus] = useState<UploadStatus>('idle');
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
+    
+    // --- [NEW] Camera State & Ref ---
+    // เก็บสถานะว่าใช้กล้องหน้าหรือหลัง
+    const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
+    // ใช้ Ref เพื่อให้ Logic ใน Loop เห็นค่าล่าสุดเสมอโดยไม่ต้อง Re-render Loop
+    const facingModeRef = useRef<'user' | 'environment'>('user'); 
 
     const videoRef = useRef<HTMLVideoElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -43,7 +49,7 @@ const App: React.FC = () => {
     const backgroundPoints = useRef<any>(null);
     const prevNoseRef = useRef<{x: number, y: number} | null>(null);
 
-    // --- 1. Load Libraries Logic ---
+    // --- Load Libraries ---
     const loadLibraries = useCallback(() => {
         if (libsLoaded) return;
         const checkMediaPipe = 'FaceMesh' in window;
@@ -74,7 +80,7 @@ const App: React.FC = () => {
         return () => clearInterval(interval);
     }, [loadLibraries]);
 
-    // --- 2. Initialize FaceMesh ---
+    // --- Initialize FaceMesh ---
     const initializeFaceMesh = useCallback(() => {
         if (!libsLoaded || faceMeshRef.current) return;
         if (!('FaceMesh' in window)) return;
@@ -93,43 +99,77 @@ const App: React.FC = () => {
         console.log("FaceMesh Initialized");
     }, [libsLoaded]);
 
-    // --- 3. Camera Handling ---
-    const startCamera = useCallback(async () => {
-        if (videoRef.current && videoRef.current.srcObject) return;
+    // --- [MODIFIED] Camera Setup (รับ Mode ได้) ---
+    const setupCamera = async (mode: 'user' | 'environment' = 'user') => {
         try {
+            // Stop old tracks
+            if (videoRef.current && videoRef.current.srcObject) {
+                const stream = videoRef.current.srcObject as MediaStream;
+                stream.getTracks().forEach(track => track.stop());
+            }
+
             const stream = await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+                video: { 
+                    facingMode: mode, 
+                    width: { ideal: 640 }, 
+                    height: { ideal: 480 },
+                    frameRate: { ideal: 30 }
+                },
+                audio: false
             });
+
             if (videoRef.current) {
                 videoRef.current.srcObject = stream;
+                videoRef.current.onloadedmetadata = () => {
+                    videoRef.current?.play();
+                    
+                    // Reset Logic ของ Optical Flow เมื่อสลับกล้อง
+                    if(backgroundPoints.current) { backgroundPoints.current.delete(); backgroundPoints.current = null; }
+                    if(prevGray.current) { prevGray.current.delete(); prevGray.current = null; }
+                    prevNoseRef.current = null;
+                };
             }
-            initializeFaceMesh();
+            
+            if (!faceMeshRef.current) initializeFaceMesh();
+
         } catch (err) {
-            setErrorMessage("Camera access is required.");
+            console.error(err);
+            setErrorMessage("Camera access denied or error.");
         }
-    }, [initializeFaceMesh]);
+    };
+
+    // --- [NEW] Toggle Camera Logic ---
+    const toggleCamera = useCallback(() => {
+        if (isRecordingRef.current) return; // ห้ามสลับตอนอัด
+        const newMode = facingMode === 'user' ? 'environment' : 'user';
+        
+        setFacingMode(newMode);
+        facingModeRef.current = newMode; // อัปเดต Ref ทันทีสำหรับ Loop
+        
+        setupCamera(newMode);
+    }, [facingMode]);
 
     const handleConnect = async () => {
         if (!isIOS()) {
             setHasPermission(true);
-            await startCamera();
+            await setupCamera('user');
             return;
         }
         try {
             const permissionState = await (DeviceMotionEvent as any).requestPermission();
             if (permissionState === 'granted') {
                 setHasPermission(true);
-                await startCamera();
+                await setupCamera('user');
             } else {
                 setErrorMessage("Sensor permissions required.");
             }
         } catch (error) {
             setHasPermission(true);
-            await startCamera();
+            await setupCamera('user');
         }
     };
 
-    // --- 4. Sensor Logic ---
+    // --- Sensor Logic ---
     const sensorListener = useCallback((event: DeviceMotionEvent) => {
         const { acceleration, rotationRate } = event;
         sensorDataBuffer.current.push({
@@ -183,7 +223,7 @@ const App: React.FC = () => {
         };
     };
 
-    // --- 5. Main Loop (FaceMesh + OpenCV + DRAWING) ---
+    // --- Main Loop ---
     const onFaceMeshResults = useCallback((results: any) => {
         const canvasCtx = canvasRef.current?.getContext('2d', { willReadFrequently: true });
         if (!canvasCtx || !videoRef.current || !canvasRef.current) return;
@@ -194,28 +234,23 @@ const App: React.FC = () => {
             canvasRef.current.height = videoHeight;
         }
         
-        // --- 1. CLEAR CANVAS ---
         canvasCtx.clearRect(0, 0, videoWidth, videoHeight);
         
         let faceLandmarks: FaceMeshResult | null = null;
         let faceBoundingBox = null;
-        
-        // ตัวแปรสำหรับ Relative Motion
         let noseX = 0, noseY = 0;
         let faceDx = 0, faceDy = 0;
 
-        // --- 2. DRAWING LOGIC & FACE TRACKING ---
+        // --- DRAWING & FACE TRACKING ---
         if (results.multiFaceLandmarks && results.multiFaceLandmarks[0]) {
             const landmarks = results.multiFaceLandmarks[0];
             
-            // A. เตรียมข้อมูล FaceMesh
             faceLandmarks = {
                 all: landmarks,
                 specific: FACEMESH_LANDMARK_INDICES.map(i => landmarks[i]),
                 flat: FACEMESH_LANDMARK_INDICES.flatMap(i => [landmarks[i].x, landmarks[i].y, landmarks[i].z])
             };
 
-            // B. คำนวณ Face Motion (จากจมูก Index 1)
             const nose = landmarks[1];
             noseX = nose.x * videoWidth;
             noseY = nose.y * videoHeight;
@@ -224,10 +259,9 @@ const App: React.FC = () => {
                 faceDx = noseX - prevNoseRef.current.x;
                 faceDy = noseY - prevNoseRef.current.y;
             }
-            // อัปเดตตำแหน่งจมูกล่าสุด
             prevNoseRef.current = { x: noseX, y: noseY };
 
-            // C. วาดโครงสร้างหน้า
+            // Draw Face
             canvasCtx.fillStyle = 'rgba(0, 255, 255, 0.4)';
             landmarks.forEach((lm: Point) => {
                 const x = lm.x * videoWidth;
@@ -236,19 +270,8 @@ const App: React.FC = () => {
                 canvasCtx.arc(x, y, 1, 0, 2 * Math.PI);
                 canvasCtx.fill();
             });
-
-            // D. วาดจุดสำคัญ
-            canvasCtx.fillStyle = '#00FF00';
-            faceLandmarks.specific.forEach((lm: Point) => {
-                const x = lm.x * videoWidth;
-                const y = lm.y * videoHeight;
-                canvasCtx.beginPath();
-                canvasCtx.arc(x, y, 2, 0, 2 * Math.PI);
-                canvasCtx.fill();
-                canvasCtx.stroke();
-            });
-
-            // E. คำนวณ Bounding Box (สำหรับ Mask OpenCV)
+            
+            // Bounding Box
             const xs = landmarks.map((l: Point) => l.x);
             const ys = landmarks.map((l: Point) => l.y);
             faceBoundingBox = {
@@ -257,7 +280,7 @@ const App: React.FC = () => {
             };
         }
 
-        // --- 3. OpenCV Processing & Optical Flow ---
+        // --- OpenCV Processing ---
         const cv = (window as any).cv;
         let currentBgVariance = 0;
         let flowStats = { count: 0, avgX: 0, avgY: 0, avgMag: 0 };
@@ -271,7 +294,6 @@ const App: React.FC = () => {
             let err: any = null;
 
             try {
-                // เตรียมภาพ Grayscale
                 currentFrame = new cv.Mat(videoHeight, videoWidth, cv.CV_8UC4);
                 const tempCanvas = document.createElement('canvas');
                 tempCanvas.width = videoWidth;
@@ -287,21 +309,11 @@ const App: React.FC = () => {
                 cv.cvtColor(currentFrame, currentGray, cv.COLOR_RGBA2GRAY);
 
                 if (prevGray.current) {
-                    // ---------------------------------------------------------
-                    // 3.1 Initial Points Detection (แก้ Bug จุดค้าง + Mask หลุด)
-                    // ---------------------------------------------------------
                     if (!backgroundPoints.current || backgroundPoints.current.rows < 30) {
-                        
-                        if (backgroundPoints.current) {
-                            backgroundPoints.current.delete();
-                            backgroundPoints.current = null;
-                        }
-
-                        // สร้าง Mask สีขาว (พื้นที่ยอมให้จับจุด)
+                        if (backgroundPoints.current) { backgroundPoints.current.delete(); backgroundPoints.current = null; }
                         mask = new cv.Mat(videoHeight, videoWidth, cv.CV_8U, new cv.Scalar(255));
                         
                         if (faceBoundingBox) {
-                            // คำนวณกรอบหน้า + ขยายขอบ 20px (Clamping ไม่ให้หลุดจอ)
                             let x = Math.floor(faceBoundingBox.xMin * videoWidth - 20);
                             let y = Math.floor(faceBoundingBox.yMin * videoHeight - 20);
                             let w = Math.floor((faceBoundingBox.xMax - faceBoundingBox.xMin) * videoWidth + 40);
@@ -312,49 +324,36 @@ const App: React.FC = () => {
                             let x2 = Math.min(videoWidth, x + w);
                             let y2 = Math.min(videoHeight, y + h);
 
-                            // ระบายสีดำทับหน้า (ห้ามจับจุดบนหน้า)
                             if (x2 > x1 && y2 > y1) {
                                 cv.rectangle(mask, new cv.Point(x1, y1), new cv.Point(x2, y2), new cv.Scalar(0), -1);
                             }
                         }
 
-                        // หาจุดบน BG
                         const newDetectedPoints = new cv.Mat();
-                        // minDistance = 15 เพื่อให้จุดกระจายตัว
                         cv.goodFeaturesToTrack(currentGray, newDetectedPoints, 100, 0.01, 15, mask, 3, false, 0.04);
-                        
-                        // Assign ให้ Ref ถือครอง (ห้าม delete newDetectedPoints ใน finally)
                         backgroundPoints.current = newDetectedPoints; 
                     }
 
-                    // ---------------------------------------------------------
-                    // 3.2 Optical Flow Calculation
-                    // ---------------------------------------------------------
                     if (backgroundPoints.current && backgroundPoints.current.rows > 0) {
                         nextPoints = new cv.Mat();
                         status = new cv.Mat();
                         err = new cv.Mat();
-                        
                         cv.calcOpticalFlowPyrLK(prevGray.current, currentGray, backgroundPoints.current, nextPoints, status, err);
                         
                         const p0 = backgroundPoints.current.data32F;
                         const p1 = nextPoints.data32F;
                         const st = status.data;
-
                         let goodNewPoints = [];
                         let movements: number[] = [];
-                        
                         let sumDx = 0, sumDy = 0, sumMag = 0;
                         let validCount = 0;
 
                         for (let i = 0; i < st.length; i++) {
                             if (st[i] === 1) {
                                 goodNewPoints.push(p1[i * 2], p1[i * 2 + 1]);
-                                
                                 const dx = p1[i * 2] - p0[i * 2];
                                 const dy = p1[i * 2 + 1] - p0[i * 2 + 1];
                                 const dist = Math.sqrt(dx*dx + dy*dy);
-                                
                                 movements.push(dist);
                                 sumDx += dx;
                                 sumDy += dy;
@@ -363,24 +362,16 @@ const App: React.FC = () => {
                             }
                         }
 
-                        // คำนวณ Variance
                         if (movements.length > 0) {
                             const mean = movements.reduce((a, b) => a + b, 0) / movements.length;
                             const sqDiffs = movements.map(val => Math.pow(val - mean, 2));
                             currentBgVariance = sqDiffs.reduce((a, b) => a + b, 0) / movements.length;
                         }
 
-                        // อัปเดต Flow Stats
                         if (validCount > 0) {
-                            flowStats = {
-                                count: validCount,
-                                avgX: sumDx / validCount,
-                                avgY: sumDy / validCount,
-                                avgMag: sumMag / validCount
-                            };
+                            flowStats = { count: validCount, avgX: sumDx / validCount, avgY: sumDy / validCount, avgMag: sumMag / validCount };
                         }
 
-                        // อัปเดตจุดสำหรับรอบถัดไป
                         if (backgroundPoints.current) backgroundPoints.current.delete();
                         if (goodNewPoints.length > 0) {
                             backgroundPoints.current = cv.matFromArray(goodNewPoints.length / 2, 1, cv.CV_32FC2, goodNewPoints);
@@ -389,8 +380,6 @@ const App: React.FC = () => {
                         }
                     }
                 }
-
-                // Update prevGray
                 if (prevGray.current) prevGray.current.delete();
                 prevGray.current = currentGray;
                 currentGray = null;
@@ -400,14 +389,12 @@ const App: React.FC = () => {
                 if (backgroundPoints.current) { backgroundPoints.current.delete(); backgroundPoints.current = null; }
                 if (prevGray.current) { prevGray.current.delete(); prevGray.current = null; }
             } finally {
-                // Cleanup Memory
                 if (currentFrame) currentFrame.delete();
                 if (currentGray) currentGray.delete();
                 if (mask) mask.delete();
                 if (nextPoints) nextPoints.delete();
                 if (status) status.delete();
                 if (err) err.delete();
-                // *ไม่ต้องลบ tempPoints/newDetectedPoints เพราะส่งให้ ref ไปแล้ว*
             }
         }
 
@@ -416,6 +403,24 @@ const App: React.FC = () => {
             const timestamp = Date.now();
             const { accel, gyro } = interpolateSensorData(timestamp);
             
+            // --- [MODIFIED] Sensor Inversion Logic ---
+            // ถ้าเป็นกล้องหลัง ('environment') ให้กลับค่า accel.x เพื่อให้ทิศทางสอดคล้องกับกล้องหน้า
+            const currentMode = facingModeRef.current;
+            const sensorMultiplier = currentMode === 'environment' ? -1 : 1;
+
+            const adjustedAccel = accel ? {
+                x: accel.x * sensorMultiplier,
+                y: accel.y,
+                z: accel.z
+            } : null;
+            
+            // หมายเหตุ: Gyro อาจต้องปรับตามแกนการหมุน แต่ Accel X คือสิ่งที่ส่งผลกับการแยกแยะซ้ายขวามากที่สุดในการเทรน
+            const adjustedGyro = gyro ? {
+                x: gyro.x,
+                y: gyro.y, 
+                z: gyro.z
+            } : null;
+
             // Capture Image
             let imageBase64 = null;
             if (videoRef.current && videoRef.current.videoWidth > 0) {
@@ -430,12 +435,9 @@ const App: React.FC = () => {
                         tempCtx.drawImage(videoEl, 0, 0, tempCanvas.width, tempCanvas.height);
                         imageBase64 = tempCanvas.toDataURL('image/jpeg', 0.7);
                     }
-                } catch (err) {
-                    console.error("Capture Error:", err);
-                }
+                } catch (err) { console.error("Capture Error:", err); }
             }
 
-            // คำนวณ Relative Motion (Face vs BG)
             const relativeX = faceDx - flowStats.avgX;
             const relativeY = faceDy - flowStats.avgY;
             const relativeMag = Math.sqrt(relativeX * relativeX + relativeY * relativeY);
@@ -443,30 +445,23 @@ const App: React.FC = () => {
             recordedData.current.push({
                 timestamp,
                 faceMesh: faceLandmarks ? faceLandmarks.flat : null,
-                sensors: { accel, gyro },
-                
-                // ส่ง Stats แทนจุดดิบ
-                opticalFlowStats: {
-                    ...flowStats,
-                    variance: currentBgVariance
-                },
-                
-                // ส่งค่าวิเคราะห์การเคลื่อนที่ (สำคัญสำหรับ Anti-Spoofing)
+                sensors: { accel: adjustedAccel, gyro: adjustedGyro }, // บันทึกค่าที่กลับด้านแล้ว
+                opticalFlowStats: { ...flowStats, variance: currentBgVariance },
                 motion_analysis: {
                     face_dx: faceDx,
                     face_dy: faceDy,
                     bg_dx: flowStats.avgX,
                     bg_dy: flowStats.avgY,
-                    relative_magnitude: relativeMag // ค่าสูง = ดี (3D), ค่าต่ำ = รูปภาพ (2D)
+                    relative_magnitude: relativeMag
                 },
-
                 bg_variance: currentBgVariance,
-                image: imageBase64
+                image: imageBase64,
+                meta: { camera_facing: currentMode } 
             });
             
             if (recordedData.current.length % 30 === 0) {
-                const hasImg = imageBase64 ? "📸 Img" : "❌ No Img";
-                console.log(`Rec: ${recordedData.current.length} | Flow: ${flowStats.count} | RelMag: ${relativeMag.toFixed(2)} | ${hasImg}`);
+                const hasImg = imageBase64 ? "📸" : "❌";
+                console.log(`Rec: ${recordedData.current.length} | Cam: ${currentMode} | ${hasImg}`);
             }
         }
     }, []);
@@ -482,57 +477,37 @@ const App: React.FC = () => {
 
     useEffect(() => {
         if (hasPermission && libsLoaded) {
-            startCamera().then(() => {
+            setupCamera('user').then(() => {
                 animationFrameId.current = requestAnimationFrame(gameLoop);
             });
         }
         return () => {
             if (animationFrameId.current) cancelAnimationFrame(animationFrameId.current);
         };
-    }, [hasPermission, libsLoaded, startCamera, gameLoop]);
+    }, [hasPermission, libsLoaded]);
 
     const toggleRecording = () => {
         if (isRecording) {
-            // STOP RECORDING
             setIsRecording(false);
             isRecordingRef.current = false;
-            console.log("Stopped. Total Frames:", recordedData.current.length);
-            
             if (recordedData.current.length > 0) {
-                // แทนที่จะ upload เลย -> เปลี่ยนเป็นเข้าโหมด Review
                 setIsReviewing(true);
             } else {
                 setErrorMessage("No data collected.");
                 setTimeout(() => setErrorMessage(null), 3000);
             }
         } else {
-            // START RECORDING
             recordedData.current = [];
             setIsRecording(true);
             isRecordingRef.current = true;
             setUploadStatus('idle');
-            console.log("Started Recording...");
         }
-    };
-
-    const handleConfirmUpload = () => {
-        setIsReviewing(false); // ปิดหน้าต่าง Review
-        uploadData({ type, scenario, motion, data: recordedData.current }); // ส่งข้อมูล
-        
-    };
-
-    const handleDiscard = () => {
-        setIsReviewing(false); // ปิดหน้าต่าง Review
-        recordedData.current = []; // ลบข้อมูลทิ้ง
-        console.log("Data discarded.");
     };
 
     const uploadData = async (payload: any) => {
         setUploadStatus('uploading');
         try {
-            // อย่าลืมเปลี่ยน URL ตรงนี้ถ้าใช้ Ngrok
             const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000'; 
-            
             const res = await fetch(`${apiUrl}/upload`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -540,13 +515,21 @@ const App: React.FC = () => {
             });
             if (!res.ok) throw new Error("Upload failed");
             setUploadStatus('success');
-            console.log("Success!");
             setTimeout(() => setUploadStatus('idle'), 3000);
         } catch (err: any) {
             setUploadStatus('error');
             setErrorMessage(err.message);
-            console.error("Upload Error:", err);
         }
+    };
+
+    const handleConfirmUpload = () => {
+        setIsReviewing(false);
+        uploadData({ type, scenario, motion, data: recordedData.current });
+    };
+
+    const handleDiscard = () => {
+        setIsReviewing(false);
+        recordedData.current = [];
     };
 
     if (!libsLoaded) {
@@ -560,9 +543,33 @@ const App: React.FC = () => {
 
     return (
         <div className="relative w-screen h-[100dvh] overflow-hidden bg-black">
-            <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-contain transform -scale-x-100" />
-            <canvas ref={canvasRef} className="absolute inset-0 w-full h-full object-contain transform -scale-x-100" />
+            {/* --- [MODIFIED] Video & Canvas Style --- */}
+            {/* Logic: กล้องหน้า (user) ให้ Mirror, กล้องหลัง (environment) ให้ปกติ (none) */}
+            <video 
+                ref={videoRef} 
+                autoPlay playsInline muted 
+                className="absolute inset-0 w-full h-full object-contain"
+                style={{ transform: facingMode === 'user' ? 'scaleX(-1)' : 'none' }} 
+            />
+            <canvas 
+                ref={canvasRef} 
+                className="absolute inset-0 w-full h-full object-contain"
+                style={{ transform: facingMode === 'user' ? 'scaleX(-1)' : 'none' }}
+            />
             
+            {/* --- [NEW] Switch Camera Button (Top-Right) --- */}
+            {hasPermission && !isRecording && !isReviewing && (
+                <button 
+                    onClick={toggleCamera}
+                    className="absolute top-6 right-6 p-3 bg-gray-800/80 rounded-full backdrop-blur-sm z-50 hover:bg-gray-700 border border-white/20 shadow-lg"
+                    title="Switch Camera"
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6 text-white">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+                    </svg>
+                </button>
+            )}
+
             {!hasPermission && (
                 <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-50">
                     <button onClick={handleConnect} className="bg-blue-600 px-8 py-4 rounded-xl font-bold text-white shadow-2xl">
@@ -573,7 +580,7 @@ const App: React.FC = () => {
 
             {hasPermission && (
                 <>
-                    {/* --- [เพิ่มใหม่] หน้าต่าง Review Mode (Overlay) --- */}
+                    {/* Review Mode */}
                     {isReviewing && (
                         <div className="absolute inset-0 bg-black/80 z-50 flex flex-col items-center justify-center space-y-6">
                             <div className="text-white text-2xl font-bold">Recording Finished</div>
@@ -582,15 +589,12 @@ const App: React.FC = () => {
                             </div>
                             
                             <div className="flex gap-4 mt-4">
-                                {/* ปุ่มลบทิ้ง */}
                                 <button 
                                     onClick={handleDiscard}
                                     className="px-8 py-4 bg-gray-600 hover:bg-gray-700 text-white rounded-xl font-bold text-lg"
                                 >
                                     ❌ Discard & Retake
                                 </button>
-                                
-                                {/* ปุ่มยืนยัน Save */}
                                 <button 
                                     onClick={handleConfirmUpload}
                                     className="px-8 py-4 bg-green-600 hover:bg-green-700 text-white rounded-xl font-bold text-lg shadow-lg border-2 border-green-400"
@@ -600,19 +604,16 @@ const App: React.FC = () => {
                             </div>
                         </div>
                     )}
-                    {/* ------------------------------------------- */}
-                    {/* UI เดิม (ซ่อนตอน Review เพื่อไม่ให้กดซ้ำ) */}
+
+                    {/* Controls */}
                     {!isReviewing && (
                         <div className="absolute bottom-0 w-full z-40">
-                            {/* Background Container: ทำเป็นแผ่น Card ลอยขึ้นมาจากด้านล่าง */}
                             <div className="bg-black/80 backdrop-blur-md rounded-t-3xl p-5 flex flex-col gap-4 border-t border-white/10 shadow-2xl pb-8">
                             
-                            {/* Settings Section: จัดเรียง Input */}
                             <div className="flex flex-col gap-3">
-                                {/* Row 1: Type (ยาวที่สุด ให้กินพื้นที่เต็ม) */}
                                 <select
                                 value={type}
-                                onChange={(e) => setType(e.target.value as Type)}
+                                onChange={(e) => setType(e.target.value)}
                                 disabled={isRecording}
                                 className="bg-gray-800/80 text-white text-sm p-3 rounded-xl border border-gray-700 focus:outline-none focus:border-green-500 w-full appearance-none"
                                 >
@@ -622,7 +623,6 @@ const App: React.FC = () => {
                                 <option value="Spoof_TimeShift">Spoof - Time Shift</option>
                                 </select>
 
-                                {/* Row 2: Scenario & Motion (แบ่งครึ่ง 50-50) */}
                                 <div className="grid grid-cols-2 gap-3">
                                 <select
                                     value={scenario}
@@ -632,13 +632,12 @@ const App: React.FC = () => {
                                 >
                                     <option value="Normal">Normal</option>
                                     <option value="WhiteWall">White Wall</option>
-                                    <option value="Backlight">Backlight</option>
                                     <option value="Walking">Walking</option>
                                 </select>
 
                                 <select
                                     value={motion}
-                                    onChange={(e) => setMotion(e.target.value as Motion)}
+                                    onChange={(e) => setMotion(e.target.value)}
                                     disabled={isRecording}
                                     className="bg-gray-800/80 text-white text-sm p-3 rounded-xl border border-gray-700 focus:outline-none focus:border-green-500 appearance-none"
                                 >
@@ -652,15 +651,10 @@ const App: React.FC = () => {
                                 </div>
                             </div>
 
-                            {/* Action Section: ปุ่มอัด และ Toast */}
                             <div className="flex items-center justify-between mt-2">
-                                {/* Empty div for spacing balance if needed, or Toast placement */}
                                 <div className="flex-1">
-                                    {/* ย้าย Toast มาตรงนี้เพื่อให้เห็นชัดเวลาอัด */}
                                     <Toast status={uploadStatus} message={errorMessage} />
                                 </div>
-
-                                {/* Record Button: ตรงกลาง ใหญ่ๆ กดง่าย */}
                                 <button
                                 onClick={toggleRecording}
                                 className={`relative flex items-center justify-center w-20 h-20 rounded-full border-4 border-white/20 transition-all duration-200 active:scale-95 shadow-lg mx-4 ${
@@ -670,13 +664,12 @@ const App: React.FC = () => {
                                 <div
                                     className={`transition-all duration-300 rounded-md ${
                                     isRecording 
-                                        ? 'w-8 h-8 bg-red-500 rounded-sm' // Stop icon style
-                                        : 'w-16 h-16 bg-red-600 rounded-full border-2 border-white' // Record icon style
+                                        ? 'w-8 h-8 bg-red-500 rounded-sm' 
+                                        : 'w-16 h-16 bg-red-600 rounded-full border-2 border-white' 
                                     }`}
                                 />
                                 </button>
-
-                                <div className="flex-1"></div> {/* Spacer for symmetry */}
+                                <div className="flex-1"></div>
                             </div>
                             </div>
                         </div>
