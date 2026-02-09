@@ -550,12 +550,12 @@ const App: React.FC = () => {
                 <video 
                     ref={videoRef} 
                     autoPlay playsInline muted 
-                    className="absolute inset-0 w-full h-full object-contain"
+                    className="absolute inset-0 w-full h-full object-cover"
                     style={{ transform: facingMode === 'user' ? 'scaleX(-1)' : 'none' }} 
                 />
                 <canvas 
                     ref={canvasRef} 
-                    className="absolute inset-0 w-full h-full object-contain"
+                    className="absolute inset-0 w-full h-full object-cover"
                     style={{ transform: facingMode === 'user' ? 'scaleX(-1)' : 'none' }}
                 />
 
