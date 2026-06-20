@@ -28,7 +28,7 @@ Before recording, the operator tags each session with three labels:
 - `Spoof_TimeShift` — delayed video replay
 
 **Scenario** — environmental condition:
-- `Normal`, `WhiteWall`, `Walking`
+- `Normal`, `WhiteWall`
 
 **Motion** — camera movement pattern during recording:
 - `orbital_RL`, `orbital_LR` — side-to-side orbital sweep

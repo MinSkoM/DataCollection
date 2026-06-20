@@ -635,7 +635,6 @@ const App: React.FC = () => {
                             >
                                 <option value="Normal">Normal</option>
                                 <option value="WhiteWall">White Wall</option>
-                                <option value="Walking">Walking</option>
                             </select>
 
                             <select
